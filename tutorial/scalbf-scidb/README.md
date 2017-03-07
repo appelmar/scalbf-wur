@@ -34,7 +34,7 @@ _Note that by default, this includes a rather careful SciDB configuration with r
 
 ### 2. Start a container 
 
-The following command starts a cointainer in detached mode, i.e. it will run as a service until it is explicitly stopped with `docker stop scidbeo-scalbf`.
+The following command starts a cointainer in detached mode, i.e. it will run as a service until it is explicitly stopped with `docker stop scalbf-wur`.
 
 _Note that the following command limits the number of CPU cores and main memory available to the container. Feel free to use different settings for `--cpuset-cpu` and `-m`._
 
