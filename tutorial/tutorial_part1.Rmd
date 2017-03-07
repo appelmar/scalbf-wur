@@ -1,0 +1,115 @@
+---
+title: "Tutorial: Land-use Change Monitoring with BFAST, SciDB, and R"
+author: "Marius Appel"
+output:
+  html_document:
+    theme: "readable"
+    toc: true
+    toc_float: true
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, eval=FALSE)
+```
+
+---
+
+
+## Preface
+
+
+This tutorial is intended for demonstration purposes only. It shows how the array database system SciDB can be used to enable land use change monitoring on Landsat image time series for larger areas. For simplicity, it uses Docker to install SciDB and further required tools. The setup of larger clusters is not covered within the tutorial and might require a manual installation. 
+
+
+---
+
+
+
+## Part I: Installing SciDB with Docker 
+
+
+
+
+
+### System requirements
+
+The first part of this tutorial runs on any machine that is able to run [Docker](https://www.docker.com). Docker is a software for lightweight virtualization, i.e. to run software in isolated **containers**. In contrast to virtual machines, containers share parts of the host operating system.  Running SciDB in a Docker container makes installing SciDB much easier and makes sure your system stays clean after removing the container. 
+
+To log in to the container via SSH, which is needed to load data to SciDB, you need an SSH client. Unix-based system already have ssh, for Windows, please have a look at [PuTTY](http://www.putty.org/). You also might want to install a git client. 
+
+Tu run the tutorial, you need around 15 GB of free disk space.
+
+
+### Setting up the infrastructure 
+
+
+#### Install Docker
+
+Depending on your operating system the installation of Docker works differently as described [here](https://docs.docker.com/engine/installation/). For Ubuntu systems, the installation typically involves the following steps.
+
+* Install dependencies `sudo apt-get install  apt-transport-https ca-certificates curl software-properties-common`
+
+* Add the Docker repository key: `curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -`
+
+* Add the package source to the system `sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"`
+
+* Install with `sudo apt-get update && sudo apt-get install docker-ce`
+
+
+* Try installation with `sudo docker run hello-world`
+
+
+### Building the SciDB Docker image (1-2 hours)
+
+You can find a preconfigured Docker image with some sample data in the `scalbf-scidb` directory at [Github](https://github.com/appelmar/scalbf-wur/tree/master/tutorial).
+
+
+Please download this folder and  enter it in a command line session e.g. by running
+
+```
+git clone https://github.com/appelmar/scalbf-wur && cd scalbf-wur/tutorial/scalbf-scidb
+```
+
+Now, we can build the image with `docker build` as below. By default, this includes the setup of a rather careful SciDB configuration with relatively little demand for main memory. You may modify `conf/scidb_docker.ini` if you have a more powerful machine before building the image.
+
+
+```
+sudo docker build --tag="scidb-eo:scalbf" . # don't miss the dot
+```
+
+This command will take some time as it starts with a minimally-sized Ubuntu operating system, downloads and installs a lot of software dependencies, and finally compiles SciDB, GDAL and other tools.The result of this operation is a *Docker image* with tag `scidb-eo:scalbf`. Images are like snapshots of a complete file system and used to start containers. 
+
+
+
+
+
+### Run a container
+
+Containers, in contrast, can be seen as instances of images and run processes. To start a container, you can use the `docker run` command. Belor, a container is started in detached mode, i.e. it will run as a service until it is explicitly stopped with `docker stop scalbf-wur`.
+
+
+
+```
+sudo docker run -d --name="scalbf-wur" --cpuset-cpus="0,1" -m "4G" -h "scalbf-wur" -p 33330:22 -p 33331:8083 -v $PWD/data:/opt/data/  scidb-eo:scalbf 
+```
+
+There are a few interesting arguments:
+
+* Setting  `--cpuset-cpu` and `-m` limits the number of CPU cores and main memory available to the container. Feel free to use different settings or change later with `docker update`.
+
+* The argument -v makes the data/ subfolder acassible to the container's filesystem at /opt/data
+
+* Some ports of the container (SSH port 22 and 8083 for HTTPs connections to SciDB / Shim) are exposed to the host machine to ports 33330 and 33331 respectively. This allows to access SciDB from outside, e.g. from R, and to log in to the container via SSH.
+
+
+The container automatically starts a few services including the SSH server, SciDB, SciDB's web service Shim, and Rserve. It might take a minute until these services are available. To check whether SciDB runs sucessfully, open your browser and go to `https://localhost:33331`. The site should ask you for a username and a password. If you haven't changed any configuration files, enter _scidb_ and _xxxx.xxxx.xxxx_ respectively and you are forwarded to a very simple SciDB status website. 
+
+
+### Cleaning up
+
+You can stop and remove containers at any time with `sudo docker stop "scalbf-wur"` and `sudo docker rm "scalbf-wur"` respectively.
+If you also want to free disk space taken by the image, run `sudo docker rmi "scidb-eo:scalbf"`.
+
+
+

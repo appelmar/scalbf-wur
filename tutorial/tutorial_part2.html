@@ -221,134 +221,66 @@ div.tocify {
 
 
 <hr />
-<div id="part-iii-change-analysis-with-scidb-and-r" class="section level2">
-<h2>Part III: Change Analysis with SciDB and R</h2>
-<p>In contrast to the previous parts, performing the actual analysis can be done completely from R, on any operating system. To connect to the database we use the <a href="https://github.com/Paradigm4/SciDBR">scidb</a> and <a href="https://github.com/flahn/scidbst/">scidbst</a> packages. The former is the ordinary R client from the SciDB developers whereas the latter works on top and overrides methods to maintain spatial and / or temporal references, provides a few functions that mimic the <a href="https://cran.r-project.org/web/packages/raster/index.html">raster package</a>, and supports downloading small images such as results from change monitoring.</p>
-<div id="installation-of-required-r-packages" class="section level3">
-<h3>Installation of required R packages</h3>
-<p>To install both packages directly from github, we can use the devtools package.</p>
-<pre class="r"><code>library(devtools)
-install_github(&quot;Paradigm4/SciDBR&quot;)
-install_github(&quot;flahn/scidbst&quot;)</code></pre>
+<div id="part-ii-ingesting-landsat-data" class="section level2">
+<h2>Part II: Ingesting Landsat Data</h2>
+<p>The following steps assume that a SciDB container is running as described in the first part.</p>
+<div id="log-in-to-the-container" class="section level3">
+<h3>Log in to the container</h3>
+<p>You can use your favorite SSH client to login to the container at port 33330 on localhost with username <em>scidb</em>. The required password is <em>xxxx.xxxx.xxxx</em> if you haven’t changed any configuration files. Using Ubuntu, you can simply run:</p>
+<pre><code>ssh -p 33330 scidb@localhost</code></pre>
 </div>
-<div id="connect-to-scidb-and-list-available-datasets" class="section level3">
-<h3>Connect to SciDB and list available datasets</h3>
-<p>Assuming you have a runnning SciDB installation as explained in the first part of this tutorial, you can connect to it with the <code>scidbconnect()</code> function. In the following, we assume the credentials needed to connect to the database have been stored as environment variables.</p>
-<pre class="r"><code>library(scidb)
-library(scidbst)
-scidbconnect(host      = Sys.getenv(&quot;scidb.host&quot;),
-             username  = Sys.getenv(&quot;scidb.username&quot;),
-             password  = Sys.getenv(&quot;scidb.password&quot;),
-             port      = Sys.getenv(&quot;scidb.port&quot;),
-             auth_type = &quot;digest&quot;,
-             protocol  = &quot;https&quot;)</code></pre>
-<p>When connected, the <code>scidbst.ls()</code> function lists available arrays with spatial and / or temporal reference. Function rguments like <code>extent</code> can be used to requests additional metadata such as the spatial and / or temporal extent.</p>
-<pre class="r"><code>scidbst.ls(extent = T)</code></pre>
-</div>
-<div id="working-with-array-proxy-objects" class="section level3">
-<h3>Working with array proxy objects</h3>
-<p>One of the core design principles of the scidb package is to work with proxy objects. If access an array from R, it will not download the data to R but a reference (proxy) to the array in the database. This is also true when you execute functions on scidb objects. The package will derive the shape of result arrays but not run any computations with the data.</p>
-<p>We are interested in the array ‘L7_SW_ETHOPIA’. The <code>scidb()</code> and <code>scidbst()</code> take the array name as argument and will create an R proxy. The latter explicitly works for spatial and temporal arrays. It will maintain metadata such as the spatial extent.</p>
-<pre class="r"><code>l7 = scidbst(&quot;L7_SW_ETHOPIA&quot;)
-l7</code></pre>
-<p>This array is quite large. In this tutorial, we want to analyze a small subregion only.</p>
-</div>
-<div id="preprocessing" class="section level3">
-<h3>Preprocessing</h3>
-<p>We can select subregions of the complete array with the <code>crop()</code> function that works similarly as the <code>raster::crop()</code> function.</p>
-<pre class="r"><code>l7.subset = crop(l7,  extent(37.42, 37.48, 9.78, 9.81))</code></pre>
-<p>Notice that this again only creates a proxy object and does no computations on the data. By using <code>scidbst</code>, we are able to work with real coordinates instead of pixel indexes.</p>
-<p>The next step is to repartition the data such that one chunk contains the complete time series of very small regions. This is needed because we want to run <code>bfastmonitor()</code> in parallel over all time series and the SciDB plugins <code>r_exec</code> and <code>stream</code> allow to run scripts independently (in parallel) on different chunks. In this example, one chunk will contain the complete time series (4177 days) of 32x32 pixels.</p>
-<pre class="r"><code>l7.subset.repart = repart(l7.subset, chunk=c(32,32,4177))</code></pre>
-<p>So far, the data is stored as integers (scaled by 10000) and not as true NDVI values and we have not removed any invalid values. We do this in a single line using the functions <code>transform</code>, <code>project</code>, and <code>filter</code>. <code>transform</code> computes new attributes based on existing attributes and an arithmetic expression. The expression here is a string because it will be executed in SciDB later and must be conform with SciDB syntax, which might slightly differ from R. The <code>project</code> function simply selects a subset of the attributes (here, we are not interested in the original scaled integers any longer). Finally the <code>filter</code> function takes a predicate which is evaluated for all array cells and if false, the cell will be removed from the output array. Here, we leave out any NDVI values outside <span class="math inline">\((-1, 1)\)</span>.</p>
-<pre class="r"><code>l7.subset.repart.ndvi = filter(project(transform(l7.subset.repart, ndvi=&quot;double(band1) / 10000&quot;), &quot;ndvi&quot;), &quot;ndvi &gt;= -1 and ndvi &lt;=1&quot;)</code></pre>
-<p>The last needed preprocessing step is to add (integer) dimension values as attributes to all cells (with the <code>transform</code> function). This is needed because we will later get all observations of one chunk in a data frame and we need to group them into by x and y in order to assign to a time series. Afterwards we will store the result as a new array in SciDB with the <code>scidbsteval()</code> function. This function finally runs the computations of all previous operations. The result will be a new arry with provided name.</p>
-<pre class="r"><code># make dimension values available as attributes
-l7.subset.bfast.in = transform(l7.subset.repart.ndvi, dimx = &quot;double(x)&quot;, dimy = &quot;double(y)&quot;, dimt=&quot;double(t)&quot;)
+<div id="ingest-landsat-data-with-r-and-the-gdalutils-package" class="section level3">
+<h3>Ingest Landsat Data with R and the gdalUtils package</h3>
+<p>The R script data/ingest.Landsat.R performs the complete ingestion of the sample data when running in the container. It can also be used to ingest larger sets of original Landsat7 scenes. In the container, you need to run <code>Rscript /opt/data/ingest.Landsat.R</code>. To understand what the script does, let’s have a closer look at the R code below.</p>
+<pre class="r"><code>library(gdalUtils)
 
-# generate a random name to store the array
-array.name1 = paste(&quot;wur_&quot;, paste(sample(letters,replace = T, size = 12), collapse=&quot;&quot;), sep=&quot;&quot;)
-array.name1
+LANDSAT_DIR = &quot;/opt/data/Landsat/&quot;
+TARGET_SRS  = &quot;EPSG:4326&quot;
+SCIDB_HOST = &quot;https://localhost&quot;
+SCIDB_PORT = 8083
+SCIDB_USER = &quot;scidb&quot;
+SCIDB_PW   = &quot;xxxx.xxxx.xxxx&quot;
+TEMPWARPFILE = &quot;test.tif&quot;
+SCIDBARRAYNAME = &quot;L7_SW_ETHOPIA&quot;
+BBOX = &quot;32.0 1.5 45.0 15.0&quot;
 
+# We don't want to pass this information in every single gdal_translate call und thus set it as environment variables
+Sys.setenv(SCIDB4GDAL_HOST=SCIDB_HOST,  SCIDB4GDAL_PORT=SCIDB_PORT, SCIDB4GDAL_USER=SCIDB_USER, SCIDB4GDAL_PASSWD=SCIDB_PW)</code></pre>
+<p>The first part simply sets some ingestion parameters like SciDB connection details and the spatial reference system, bounding box, and name of the created SciDB array. The last line sets SciDB connection details as environment variables such that subsequent GDAL calls know how to connect to SciDB.</p>
+<p>In the next part, we check available GeoTIFF files and extract the WRS2 path / row and recording date from filenames. The result is a data.frame with rows for each image. In the last step, the data.frame is furthermore ordered by recording date, such that we start our ingestion with the oldest image.</p>
+<pre class="r"><code>image.files = data.frame(path=list.files(LANDSAT_DIR, &quot;*.tif&quot;,full.names = T),stringsAsFactors = F)
+image.files$name = basename(image.files$path)
+image.files$wrs2path = as.integer(substr(image.files$name,4,6))
+image.files$wrs2row = as.integer(substr(image.files$name,7,9))
+image.files$t = strptime(substr(image.files$name,10,16), format=&quot;%Y%j&quot;)
+image.files = image.files[order(image.files$t),] # order by time</code></pre>
+<p>Now, we use the gdalUtils package to warp and upload the first image. During ingestion of the first image, we specify the bounding box of the target array and the temporal resolution (daily).</p>
+<pre class="r"><code># ingest first image
+i = 1
 
-# the following command runs previous operations and stores the result as a new array
-# it might take a few minutes
-scidbsteval(l7.subset.bfast.in, name = array.name1)</code></pre>
-</div>
-<div id="running-bfastmonitor-in-scidb" class="section level3">
-<h3>Running bfastmonitor in SciDB</h3>
-<p>Unfortunately, we need to build an AFL query to run bfastmonitor with <code>r_exec</code>. This query, will include</p>
-<ul>
-<li>the R script that is executed over all chunk</li>
-<li>a specification of the output array (5 attributes: x, y, nsamples, changedate, magnitude)</li>
-<li>the call to <code>r_exec()</code></li>
-<li>representing the result as a one-dimensional array (<code>unpack()</code>)</li>
-<li>storing the result as a new array (<code>store()</code>)</li>
-</ul>
-<p>We store the complete query as an R string and use the R function <code>iquery()</code> to run it. The most interesting part is the R script. It automatically gets vectors <code>dimx</code>, <code>dimy</code>, <code>dimt</code>, and <code>ndvi</code> with the chunk data. We merge these vectors as columns in a data.frame and use <code>plyr::ddply()</code> to group rows by <code>dimx</code>, and <code>dimy</code> and to apply a function to each group. In other words, we collect the data of all time-series and apply a function to these independently. This function then calls <code>bfastts()</code> to construct a <code>ts</code> object and runs <code>bfastmonitor()</code>. The result is a list of vectors, whose elements will be mapped to array attributes. For each pixel, we return its x and y coordinate, the length of the time series and the detected change date and magnitude. Results from all chunks then well be merged automatically, i.e. we get a single result array.</p>
-<pre class="r"><code>afl.query.R = paste(&quot;store(unpack(r_exec(&quot;, array.name1, &quot;,'output_attrs=5','expr=
-                require(xts)
-                require(bfast)
-                require(plyr)
-                set_fast_options()
-                ndvi.df = data.frame(ndvi=ndvi,dimy=dimy,dimx=dimx,dimt=dimt)
-                f &lt;- function(x) {
-                return(
-                  tryCatch({
-                    ndvi.ts = bfastts(x$ndvi,as.Date(\&quot;2003-07-21\&quot;) + x$dimt,\&quot;irregular\&quot;)
-                    bfast.result = bfastmonitor(ndvi.ts, start = c(2010, 1), order=1,history=\&quot;ROC\&quot;)
-                    return(c(nt=length(x$dimt), breakpoint = bfast.result$breakpoint,  magnitude = bfast.result$magnitude ))
-                  }, error=function(e) {
-                    return (c(nt=0,breakpoint=NA,magnitude=NA))
-                  }))}
-                  ddply(ndvi.df, c(\&quot;dimy\&quot;,\&quot;dimx\&quot;), f)
-                  list(dimy = as.double(ndvi.change$dimy), dimx = as.double(ndvi.change$dimx), nt = as.double(ndvi.change$nt), brk = as.double(ndvi.change$breakpoint), magn = as.double(ndvi.change$magnitude) )'),i), 
-                &quot;, array.name2 ,&quot;)&quot;, sep=&quot;&quot;)
+status.started = format(Sys.time())
+cat(paste(status.started, &quot;: &quot;, image.files$name[i], &quot; (&quot;, i, &quot;/&quot;, nrow(image.files), &quot;) ...&quot;, sep=&quot;&quot;))
+res = gdalwarp(image.files$path[i], t_srs = TARGET_SRS,dstfile = TEMPWARPFILE, overwrite = TRUE)
+res = gdal_translate(src_dataset = TEMPWARPFILE,
+                dst_dataset = paste(&quot;SCIDB:array=&quot;, SCIDBARRAYNAME, sep=&quot;&quot;),
+                of = &quot;SciDB&quot;, co = list(paste(&quot;t=&quot;,format(image.files$t[i],&quot;%Y-%m-%d&quot;),sep=&quot;&quot;), &quot;dt=P1D&quot;,  paste(&quot;bbox=&quot;,BBOX,sep=&quot;&quot;), paste(&quot;srs=&quot;, TARGET_SRS, sep=&quot;&quot;), &quot;type=STS&quot;))
+cat(&quot; DONE. (&quot; , round(100* (i) / nrow(image.files),digits=2) , &quot;%)&quot;)
+cat(&quot;\n&quot;)
+i = i + 1</code></pre>
+<p>After ingestion of the first image we run the same steps on all other images in a simple loop.</p>
+<pre class="r"><code># ingest other images
+while (i &lt;= nrow(image.files)) 
+{
+  status.started = format(Sys.time())
+  cat(paste(status.started, &quot;: &quot;, image.files$name[i], &quot; (&quot;, i, &quot;/&quot;, nrow(image.files), &quot;) ...&quot;, sep=&quot;&quot;))
+  res = gdalwarp(image.files$path[i], t_srs = TARGET_SRS,dstfile = TEMPWARPFILE, overwrite = TRUE)
+  res = gdal_translate(src_dataset = TEMPWARPFILE,dst_dataset = paste(&quot;SCIDB:array=&quot;, SCIDBARRAYNAME, sep=&quot;&quot;), of = &quot;SciDB&quot;, co =list(&quot;type=ST&quot;,paste(&quot;t=&quot;,format(image.files$t[i],&quot;%Y-%m-%d&quot;),sep=&quot;&quot;),  &quot;dt=P1D&quot;))
+  cat(&quot; DONE. (&quot; , round(100* (i) / nrow(image.files),digits=2) , &quot;%)&quot;)
+  cat(&quot;\n&quot;)
+  i = i + 1
+}
 
-
-iquery(afl.query.R) # this runs the query above and takes a few minutes</code></pre>
-</div>
-<div id="postprocessing" class="section level3">
-<h3>Postprocessing</h3>
-<p>The result of the operation is a one-dimensional array with 5 attributes:</p>
-<ul>
-<li>integer x and y coordinates</li>
-<li>the length of the time series</li>
-<li>the detected change magnitude</li>
-<li>the detected change date</li>
-</ul>
-<p>This one-dimensional array has no spatial / temporal reference any longer. We will thus work with functions from scidb instead of scidbst. Most functions in both packages work in the same way. We will assign the spatial reference to the result after the results have been postprocessed.</p>
-<pre class="r"><code>l7.subset.bfast.out = scidb(array.name2)
-l7.subset.bfast.out</code></pre>
-<p>Looking at the schema of the result array, it has pretty uninformative attribute names such as <code>expr_value_0</code>. Our first step is hence to rename the attributes using a cambination of <code>transform</code> and <code>project</code>. At the same type, we cast the datatype of x and y to <code>int64</code>, which is needed because these will eventually become new dimensions of the result.</p>
-<pre class="r"><code>l7.subset.bfast.out = scidb::project(transform(l7.subset.bfast.out, y=&quot;int64(expr_value_0)&quot;, x=&quot;int64(expr_value_1)&quot;, n = &quot;int16(expr_value_2)&quot;, breakdate = &quot;expr_value_3&quot;, magnitude=&quot;expr_value_4&quot;), c(&quot;y&quot;,&quot;x&quot;,&quot;n&quot;,&quot;breakdate&quot;,&quot;magnitude&quot;))
-head(l7.subset.bfast.out)</code></pre>
-<p>To make the result a two-dimensional array (image), we need to convert its attributes <code>x</code> and <code>y</code> to dimensions. Therefore, the function <code>redimension()</code> can be used with new dimensions as character vector argument.</p>
-<pre class="r"><code># redimension the array such that y and x become dimensions whereas i will be dropped
-l7.subset.bfast.out.redim = redimension(l7.subset.bfast.out,dim = c(&quot;y&quot;,&quot;x&quot;))</code></pre>
-<p>This array now has two unbounded dimensions. For simplicity, we trim empty areas around the actual data and provide specific bounds for the dimensions. We need to derive the original array extent (in integer piel coordinates) first and use these values in <code>subarray()</code>, which selects a rectangular subregion in the image and lets new array dimensions start with 0.</p>
-<pre class="r"><code>array_extent = aggregate(l7.subset.bfast.in, FUN=&quot;min(dimx),max(dimx),min(dimy),max(dimy),min(dimt),max(dimt)&quot;)@proxy[]
-array_extent
-l7.subset.bfast.out.redim.trimmed = subarray(l7.subset.bfast.out.redim,limits = c(4689,7597, 4800, 7819))</code></pre>
-<p>Notice that the operator <code>[]</code> can be used to download data from scidb proxy objects to R data.frames. We are now ready to store the result as a new array:</p>
-<pre class="r"><code>array.name3 = paste(&quot;wur_bfastmonitor_map_&quot;, paste(sample(letters,replace = T, size = 12), collapse=&quot;&quot;), sep=&quot;&quot;)
-array.name3
-
-scidbeval(l7.subset.bfast.out.redim.trimmed, name=array.name3)</code></pre>
-<p>To set the spatial reference of the result image, we run the same trimming on a scidbst proxy for the bfastmonitor input array. This will not run any computations but automatically derive correct location information. We then use this information to set the spatial reference of the result image.</p>
-<pre class="r"><code>srs.reference.array = subarray(l7.subset.bfast.in,limits = c(7597,4689,0, 7819, 4800, 0))
-setSRS(scidb(array.name3), srs(srs.reference.array), affine(srs.reference.array))</code></pre>
-</div>
-<div id="downloading-results" class="section level3">
-<h3>Downloading Results</h3>
-<p>For two dimensional arrays, the scidbst package comes with function to download data as RasterBrick with <code>as()</code>. We need to create a scidbstproxy first and then plot the time series length of individual pixels, the change date, and the change magnitude.</p>
-<pre class="r"><code>result = scidbst(array.name3)
-result
-
-x = as(result, &quot;RasterBrick&quot;)
-plot(x$n, main=&quot;Sample size&quot;)
-plot(x$breakdate, main=&quot;Break date&quot;)
-plot(x$magnitude, main=&quot;Change magnitude&quot;)</code></pre>
+cat(paste(Sys.time(), &quot;: FINISHED!\n\n&quot;, sep=&quot;&quot;))</code></pre>
 </div>
 </div>
 

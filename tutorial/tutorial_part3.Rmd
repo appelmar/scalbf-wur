@@ -10,10 +10,8 @@ output:
 
 
 ```{r global_options, include=FALSE}
-knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, eval=FALSE)
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, eval=TRUE)
 ```
-
-
 
 
 ---
@@ -32,7 +30,7 @@ In contrast to the previous parts, performing the actual analysis can be done co
 ### Installation of required R packages
 To install both packages directly from github, we can use the devtools package.
 
-```{r}
+```{r, eval=FALSE}
 library(devtools)
 install_github("Paradigm4/SciDBR")
 install_github("flahn/scidbst")
@@ -57,7 +55,7 @@ scidbconnect(host      = Sys.getenv("scidb.host"),
 
 When connected, the `scidbst.ls()` function lists available arrays with spatial and / or temporal reference. Function rguments like `extent` can be used to requests additional metadata such as the spatial and / or temporal extent.
 
-```{r}
+```{r, eval=FALSE}
 scidbst.ls(extent = T)
 ```
 
@@ -108,18 +106,28 @@ The last needed preprocessing step is to add (integer) dimension values as attri
 
 
 ```{r}
-# make dimension values available as attributes
 l7.subset.bfast.in = transform(l7.subset.repart.ndvi, dimx = "double(x)", dimy = "double(y)", dimt="double(t)")
 
-# generate a random name to store the array
 array.name1 = paste("wur_", paste(sample(letters,replace = T, size = 12), collapse=""), sep="")
-array.name1
+array.name1 # generated random name to store the array
 
-
-# the following command runs previous operations and stores the result as a new array
-# it might take a few minutes
 scidbsteval(l7.subset.bfast.in, name = array.name1)
 ```
+
+
+
+### Simple summary statistics
+
+Let's get a first overview of the data and compute some summary statistics (minimum, maximum, mean, and standard deviation of the NDVI, total number of observations).
+
+```{r}
+
+l7.subset.bfast.in = scidbst(array.name1)
+l7.subset.repart.ndvi.stats = aggregate(l7.subset.bfast.in, FUN="max(ndvi), min(ndvi), avg(ndvi), count(*)")
+l7.subset.repart.ndvi.stats@proxy[]
+``` 
+
+The slot `@proxy` returns the underlying scidb proxy object and the operation `[]` can be used to download data from a SciDB array as an R data.frame.
 
 
 
@@ -137,6 +145,8 @@ We store the complete query as an R string and use the R function `iquery()` to 
 
 
 ```{r}
+array.name2 = paste("wur_bfastmonitor_", paste(sample(letters,replace = T, size = 12), collapse=""), sep="")
+array.name2
 afl.query.R = paste("store(unpack(r_exec(", array.name1, ",'output_attrs=5','expr=
                 require(xts)
                 require(bfast)
@@ -152,7 +162,7 @@ afl.query.R = paste("store(unpack(r_exec(", array.name1, ",'output_attrs=5','exp
                   }, error=function(e) {
                     return (c(nt=0,breakpoint=NA,magnitude=NA))
                   }))}
-                  ddply(ndvi.df, c(\"dimy\",\"dimx\"), f)
+                  ndvi.change = ddply(ndvi.df, c(\"dimy\",\"dimx\"), f)
                   list(dimy = as.double(ndvi.change$dimy), dimx = as.double(ndvi.change$dimx), nt = as.double(ndvi.change$nt), brk = as.double(ndvi.change$breakpoint), magn = as.double(ndvi.change$magnitude) )'),i), 
                 ", array.name2 ,")", sep="")
 
@@ -192,7 +202,6 @@ head(l7.subset.bfast.out)
 To make the result a two-dimensional array (image), we need to convert its attributes `x` and `y` to dimensions. Therefore, the function `redimension()` can be used with new dimensions as character vector argument.
 
 ```{r}
-# redimension the array such that y and x become dimensions whereas i will be dropped
 l7.subset.bfast.out.redim = redimension(l7.subset.bfast.out,dim = c("y","x"))
 ```
 
@@ -224,7 +233,7 @@ setSRS(scidb(array.name3), srs(srs.reference.array), affine(srs.reference.array)
 
 ### Downloading Results
 
-For two dimensional arrays, the scidbst package comes with function to download data as RasterBrick with `as()`. We need to create a scidbstproxy first and then plot the time series length of individual pixels, the change date, and the change magnitude.
+For two dimensional arrays, the scidbst package comes with function to download data as RasterBrick with `as()`. We need to create a scidbstproxy first and then plot the time series length of individual pixels, the change date, and the change magnitude. The length of the time series clearly shows a pattern due to Landsat7's failure of the scan line corrector.
 
 
 ```{r}

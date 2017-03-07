@@ -1,0 +1,118 @@
+---
+title: "Tutorial: Land-use Change Monitoring with BFAST, SciDB, and R"
+author: "Marius Appel"
+output:
+  html_document:
+    theme: "readable"
+    toc: true
+    toc_float: true
+---
+
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, eval=FALSE)
+```
+
+
+
+---
+
+
+
+## Part II: Ingesting Landsat Data
+
+
+The following steps assume that a SciDB container is running as described in the first part.  
+
+
+
+
+### Log in to the container
+
+You can use your favorite SSH client to login to the container at port 33330 on localhost with username _scidb_. The required password is _xxxx.xxxx.xxxx_ if you haven't changed any configuration files. Using Ubuntu, you can simply run:
+
+```
+ssh -p 33330 scidb@localhost
+``` 
+
+
+
+
+### Ingest Landsat Data with R and the gdalUtils package
+
+The R script data/ingest.Landsat.R performs the complete ingestion of the sample data when running in the container. It can also be used to ingest larger sets of original Landsat7 scenes. In the container, you need to run `Rscript /opt/data/ingest.Landsat.R`. To understand what the script does, let's have a closer look at the R code below.
+
+```{r, eval=FALSE}
+library(gdalUtils)
+
+LANDSAT_DIR = "/opt/data/Landsat/"
+TARGET_SRS  = "EPSG:4326"
+SCIDB_HOST = "https://localhost"
+SCIDB_PORT = 8083
+SCIDB_USER = "scidb"
+SCIDB_PW   = "xxxx.xxxx.xxxx"
+TEMPWARPFILE = "test.tif"
+SCIDBARRAYNAME = "L7_SW_ETHOPIA"
+BBOX = "32.0 1.5 45.0 15.0"
+
+# We don't want to pass this information in every single gdal_translate call und thus set it as environment variables
+Sys.setenv(SCIDB4GDAL_HOST=SCIDB_HOST,  SCIDB4GDAL_PORT=SCIDB_PORT, SCIDB4GDAL_USER=SCIDB_USER, SCIDB4GDAL_PASSWD=SCIDB_PW)
+```
+
+The first part simply sets some ingestion parameters like SciDB connection details and  the spatial reference system,  bounding box, and name of the created SciDB array. The last line sets SciDB connection details as environment variables such that subsequent GDAL calls know how to connect to SciDB. 
+
+In the next part, we check available GeoTIFF files and extract the WRS2 path / row and recording date from filenames. The result is a data.frame with rows for each image. In the last step, the data.frame is furthermore ordered by recording date, such that we start our ingestion with the oldest image. 
+
+
+```{r, eval=FALSE}
+image.files = data.frame(path=list.files(LANDSAT_DIR, "*.tif",full.names = T),stringsAsFactors = F)
+image.files$name = basename(image.files$path)
+image.files$wrs2path = as.integer(substr(image.files$name,4,6))
+image.files$wrs2row = as.integer(substr(image.files$name,7,9))
+image.files$t = strptime(substr(image.files$name,10,16), format="%Y%j")
+image.files = image.files[order(image.files$t),] # order by time
+```
+
+
+Now, we use the gdalUtils package to warp and upload the first image. During ingestion of the first image, we specify the bounding box of the target array and the temporal resolution (daily). 
+
+```{r, eval=FALSE}
+# ingest first image
+i = 1
+
+status.started = format(Sys.time())
+cat(paste(status.started, ": ", image.files$name[i], " (", i, "/", nrow(image.files), ") ...", sep=""))
+res = gdalwarp(image.files$path[i], t_srs = TARGET_SRS,dstfile = TEMPWARPFILE, overwrite = TRUE)
+res = gdal_translate(src_dataset = TEMPWARPFILE,
+                dst_dataset = paste("SCIDB:array=", SCIDBARRAYNAME, sep=""),
+                of = "SciDB", co = list(paste("t=",format(image.files$t[i],"%Y-%m-%d"),sep=""), "dt=P1D",  paste("bbox=",BBOX,sep=""), paste("srs=", TARGET_SRS, sep=""), "type=STS"))
+cat(" DONE. (" , round(100* (i) / nrow(image.files),digits=2) , "%)")
+cat("\n")
+i = i + 1
+```
+
+After ingestion of the first image we run the same steps on all other images in a simple loop.
+
+
+```{r, eval=FALSE}
+# ingest other images
+while (i <= nrow(image.files)) 
+{
+  status.started = format(Sys.time())
+  cat(paste(status.started, ": ", image.files$name[i], " (", i, "/", nrow(image.files), ") ...", sep=""))
+  res = gdalwarp(image.files$path[i], t_srs = TARGET_SRS,dstfile = TEMPWARPFILE, overwrite = TRUE)
+  res = gdal_translate(src_dataset = TEMPWARPFILE,dst_dataset = paste("SCIDB:array=", SCIDBARRAYNAME, sep=""), of = "SciDB", co =list("type=ST",paste("t=",format(image.files$t[i],"%Y-%m-%d"),sep=""),  "dt=P1D"))
+  cat(" DONE. (" , round(100* (i) / nrow(image.files),digits=2) , "%)")
+  cat("\n")
+  i = i + 1
+}
+
+cat(paste(Sys.time(), ": FINISHED!\n\n", sep=""))
+```
+
+
+
+
+
+
+
