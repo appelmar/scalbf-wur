@@ -73,10 +73,10 @@ To clean up your system, you can remove containers and the image with
 | conf/supervisord.conf | Configuration file to manage automatic starts in Docker containers |
 | conf/iquery.conf | Default configuration file for iquery |
 | conf/shim.conf | Default configuration file for shim |
-| data/ | Directory with sample Landsat dataset |
+| data/Landsat | Directory with sample Landsat dataset |
+| data/ingest.Landsat.R | R script to ingest sample dataset to SciDB when running in the container |
 | Dockerfile | Docker image definition file |
 | container_startup.sh | Script that starts SciDB, Rserve, and other system services within a container  |
-| run.sh | Script that calls container_startup.sh and starts Rscript /opt/run/run.R if available within the container, can be used as container CMD instruction |
 
 
 ## References
