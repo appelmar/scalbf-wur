@@ -25,6 +25,7 @@ R CMD Rserve --vanilla &>/dev/null
 sleep 2
 echo -e "... rserve started"
 
+/usr/lib/rstudio-server/bin/rserver
 
 su - scidb -c"/opt/scidb/15.7/bin/iquery -anq \"load_library('r_exec');\""
 su - scidb -c"/opt/scidb/15.7/bin/iquery -anq \"load_library('scidb4geo');\""

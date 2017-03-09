@@ -87,10 +87,15 @@ RUN chmod +x install_r_exec.sh; sync &&  ./install_r_exec.sh
 COPY install/install.packages.R /home/root/install/
 RUN Rscript install.packages.R
 
+# Install Rstudio Server
+RUN apt-get install -y -q libapparmor1
+RUN (wget https://download2.rstudio.org/rstudio-server-1.0.136-amd64.deb && gdebi -n rstudio-server-1.0.136-amd64.deb)
 
 COPY conf/supervisord.conf 	/etc/supervisor/conf.d/
 COPY container_startup.sh 	/opt/container_startup.sh 
 RUN  chmod +x /opt/container_startup.sh 
+
+
 
 CMD "/usr/bin/supervisord"
 
