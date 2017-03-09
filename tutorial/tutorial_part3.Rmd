@@ -53,7 +53,7 @@ scidbconnect(host      = Sys.getenv("scidb.host"),
 ```
 
 
-When connected, the `scidbst.ls()` function lists available arrays with spatial and / or temporal reference. Function rguments like `extent` can be used to requests additional metadata such as the spatial and / or temporal extent.
+When connected, the `scidbst.ls()` function lists available arrays with spatial and / or temporal reference. Function arguments like `extent` can be used to requests additional metadata such as the spatial and / or temporal extent.
 
 ```{r, eval=FALSE}
 scidbst.ls(extent = T)
@@ -63,8 +63,8 @@ scidbst.ls(extent = T)
 
 ### Working with array proxy objects
 
-One of the core design principles of the scidb package is to work with proxy objects. If access an array from R, it will not download the data to R but a reference (proxy) to the array in the database.
-This is also true when you execute functions on scidb objects. The package will derive the shape of result arrays but not run any computations with the data. 
+One of the core design principles of the scidb package is to work with _proxy_ objects. If you access an array from R, it will not download the data but a create a reference (proxy) to the array in the database.
+This is also true when you execute functions on scidb / scidbst objects. The packages will derive the shape of result arrays but not run any computations on the data. 
 
 We are interested in the array 'L7_SW_ETHOPIA'. The `scidb()` and `scidbst()` take the array name as argument and will create an R proxy. The latter explicitly works for spatial and temporal arrays. It will maintain metadata such as the spatial extent. 
 
@@ -79,13 +79,13 @@ This array is quite large. In this tutorial, we want to analyze a small subregio
 
 ### Preprocessing
 
-We can select subregions of the complete array with the `crop()` function that works similarly as the `raster::crop()` function.    
+We can select subregions of the complete array with the `crop()` function that works similar to the `raster::crop()` function.    
 
 ```{r}
 l7.subset = crop(l7,  extent(37.42, 37.48, 9.78, 9.81))
 ```
 
-Notice that this again only creates a proxy object and does no computations on the data. By using `scidbst`, we are able to work with real coordinates instead of pixel indexes. 
+Notice that this again only creates a proxy object and does not run any computations. By using `scidbst`, we are able to work with real coordinates instead of pixel indexes. 
 
 
 The next step is to repartition the data such that one chunk contains the complete time series of very small regions. This is needed because we want to run `bfastmonitor()` in parallel over all time series and the SciDB plugins `r_exec` and `stream` allow to run scripts independently (in parallel) on different chunks. In this example, one chunk will contain the complete time series (4177 days) of 32x32 pixels.  
@@ -94,15 +94,14 @@ The next step is to repartition the data such that one chunk contains the comple
 l7.subset.repart = repart(l7.subset, chunk=c(32,32,4177))
 ```
 
-
-So far, the data is stored as integers (scaled by 10000) and not as true NDVI values and we have not removed any invalid values. We do this in a single line using the functions `transform`, `project`, and `filter`.  `transform` computes new attributes based on existing attributes and an arithmetic expression. The expression here is a string because it will be executed in SciDB later and must be conform with SciDB syntax, which might slightly differ from R. The `project` function simply selects a subset of the attributes (here, we are not interested in the original scaled integers any longer). Finally the `filter` function takes a predicate which is evaluated for all array cells and if false, the cell will be removed from the output array. Here, we leave out any NDVI values outside $(-1, 1)$.
+So far, the data is stored as integers (scaled by 10000) and not as true NDVI values and we also have not removed any invalid values. We do this in a single line using the functions `transform`, `project`, and `filter`.  `transform` computes new attributes based on existing attributes and an arithmetic expression. The expression here is a string because it will be executed in SciDB later and must be conform with SciDB syntax, which might slightly differ from R. The `project` function simply selects a subset of the attributes (here, we are not interested in the original scaled integers any longer). Finally the `filter` function takes a predicate which is evaluated for all array cells and if false, the cell will be removed from the output array. Here, we leave out any NDVI values outside $(-1, 1)$.
 
 ```{r}
 l7.subset.repart.ndvi = filter(project(transform(l7.subset.repart, ndvi="double(band1) / 10000"), "ndvi"), "ndvi >= -1 and ndvi <=1")
 ```
 
 
-The last needed preprocessing step is to add (integer) dimension values as attributes to all cells (with the `transform` function). This is needed because we will later get all observations of one chunk in a data frame and we need to group them into by x and y in order to assign to a time series. Afterwards we will store the result as a new array in SciDB with the `scidbsteval()` function. This function finally runs the computations of all previous operations. The result will be a new arry with provided name.
+The last needed preprocessing step is to add (integer) dimension values as attributes to all cells (again, with the `transform` function). This is needed because we will later get all observations of one chunk in a data frame and we need to group them by x and y in order to process all $32^2$ time series of a chunk separately. Afterwards we will store the result as a new array in SciDB with the `scidbsteval()` function. This function finally runs the computations of all previous operations. The result will be a new array with provided name.
 
 
 ```{r}
@@ -127,7 +126,7 @@ l7.subset.repart.ndvi.stats = aggregate(l7.subset.bfast.in, FUN="max(ndvi), min(
 l7.subset.repart.ndvi.stats@proxy[]
 ``` 
 
-The slot `@proxy` returns the underlying scidb proxy object and the operation `[]` can be used to download data from a SciDB array as an R data.frame.
+For scidbst objects, the slot `@proxy` returns the underlying scidb proxy object and the operation `[]` can be used to download data from a SciDB array as an R data.frame.
 
 
 
@@ -135,13 +134,13 @@ The slot `@proxy` returns the underlying scidb proxy object and the operation `[
 
 Unfortunately, we need to build an AFL query to run bfastmonitor with `r_exec`. This query, will include
 
-* the R script that is executed over all chunk
+* the R script that is executed over all chunks
 * a specification of the output array (5 attributes: x, y, nsamples, changedate, magnitude)
 * the call to `r_exec()`
 * representing the result as a one-dimensional array (`unpack()`)
 * storing the result as a new array (`store()`)
 
-We store the complete query as an R string and use the R function `iquery()` to run it. The most interesting part is the R script. It automatically gets vectors `dimx`, `dimy`, `dimt`, and `ndvi` with the chunk data. We merge these vectors as columns in a data.frame and use `plyr::ddply()` to group rows by `dimx`, and `dimy` and to apply a function to each group. In other words, we collect the data of all time-series and apply a function to these independently. This function then calls `bfastts()` to construct a `ts` object and runs `bfastmonitor()`.  The result is a list of vectors, whose elements will be mapped to array attributes. For each pixel, we return its x and y coordinate, the length of the time series and the detected change date and magnitude. Results from all chunks then well be merged automatically, i.e. we get a single result array.
+We store the complete query as an R string and use the R function `iquery()` to run it. The most interesting part is the R script. It automatically receives vectors `dimx`, `dimy`, `dimt`, and `ndvi` with the chunk data. We merge these vectors as columns in a data.frame and use `plyr::ddply()` to group rows by `dimx`, and `dimy` and to apply a function to each group. In other words, apply a function to all time series independently. This function then calls `bfastts()` to construct a `ts` object and runs `bfastmonitor()`.  The result is a list of vectors, whose elements will be mapped to array attributes. For each pixel, we return its x and y coordinate, the length of the time series and the detected change date and magnitude. Results from all chunks then well be merged automatically, i.e. we get a single result array.
 
 
 ```{r}
@@ -177,19 +176,19 @@ iquery(afl.query.R) # this runs the query above and takes a few minutes
 
 The result of the operation is a one-dimensional array with 5 attributes:
 
-* integer x and y coordinates
+* integer x and y pixel coordinates
 * the length of the time series
 * the detected change magnitude
 * the detected change date
 
-This one-dimensional array has no spatial / temporal reference any longer. We will thus work with functions from scidb instead of scidbst. Most functions in both packages work in the same way. We will assign the spatial reference to the result after the results have been postprocessed. 
+This one-dimensional array has no spatial / temporal reference any longer. We will thus work with functions from scidb instead of scidbst. Most functions in both packages work in the same way. We will assign the spatial reference to the result after the results have been postprocessed and stored as new array. 
 
 ```{r}
 l7.subset.bfast.out = scidb(array.name2)
 l7.subset.bfast.out
 ```
 
-Looking at the schema of the result array, it has pretty uninformative attribute names such as `expr_value_0`. Our first step is hence to rename the attributes using a cambination of `transform` and `project`. At the same type, we cast the datatype of x and y to `int64`, which is needed because these will eventually become new dimensions of the result. 
+Looking at the schema of the result array, it has pretty uninformative attribute names such as `expr_value_0`. Our first step is hence to rename the attributes using a cambination of `transform` and `project`. At the same time, we cast the datatype of x and y to `int64`, which is needed because these will eventually become new dimensions of the result. 
 
 
 
@@ -199,14 +198,14 @@ head(l7.subset.bfast.out)
 ```
 
 
-To make the result a two-dimensional array (image), we need to convert its attributes `x` and `y` to dimensions. Therefore, the function `redimension()` can be used with new dimensions as character vector argument.
+To represent the result as a two-dimensional array (image), we need to convert its attributes `x` and `y` to dimensions. Therefore, the function `redimension()` can be used with new dimensions as character vector argument.
 
 ```{r}
 l7.subset.bfast.out.redim = redimension(l7.subset.bfast.out,dim = c("y","x"))
 ```
 
 
-This array now has two unbounded dimensions. For simplicity, we trim empty areas around the actual data and provide specific bounds for the dimensions. We need to derive the original array extent (in integer piel coordinates) first and use these values in `subarray()`, which selects a rectangular subregion in the image and lets new array dimensions start with 0.
+This array now has two unbounded dimensions. For simplicity, we trim empty areas around the actual data and provide specific bounds for the dimensions. We need to derive the original array extent (in integer pixel coordinates) first and use these values in `subarray()`, which selects a rectangular subregion in the image and lets new array dimensions start with 0.
 
 ```{r}
 array_extent = aggregate(l7.subset.bfast.in, FUN="min(dimx),max(dimx),min(dimy),max(dimy),min(dimt),max(dimt)")@proxy[]
@@ -233,7 +232,7 @@ setSRS(scidb(array.name3), srs(srs.reference.array), affine(srs.reference.array)
 
 ### Downloading Results
 
-For two dimensional arrays, the scidbst package comes with function to download data as RasterBrick with `as()`. We need to create a scidbstproxy first and then plot the time series length of individual pixels, the change date, and the change magnitude. The length of the time series clearly shows a pattern due to Landsat7's failure of the scan line corrector.
+For two dimensional arrays, the scidbst package comes with function to download data as RasterBrick with `as()`. We need to create a scidbst object first and then plot the time series length of individual pixels, the change date, and the change magnitude. The length of the time series clearly shows a pattern due to Landsat7's failure of the scan line corrector.
 
 
 ```{r}
